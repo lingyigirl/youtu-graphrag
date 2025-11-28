@@ -22,6 +22,7 @@ wheels/
 
 data/
 output/
+prompt_logs/
 
 retriever/faiss_cache_new/*
 docker/Dockerfile

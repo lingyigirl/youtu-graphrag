@@ -26,7 +26,8 @@ from pydantic import BaseModel
 import uvicorn
 
 from utils.logger import logger
-import ast
+import ast # 用于解析三元组字符串
+
 
 # Import document parser
 try:
@@ -826,6 +827,71 @@ async def ask_question(request: QuestionRequest, client_id: str = "default"):
         initial_chunk_contents = _merge_chunk_contents(initial_chunk_ids, all_chunk_contents)
         context_initial = "=== Triples ===\n" + "\n".join(initial_triples[:20]) + "\n=== Chunks ===\n" + "\n".join(initial_chunk_contents[:10])
         init_prompt = kt_retriever.generate_prompt(question, context_initial)
+
+        # ========== 新增代码保存提示词开始 (New Code Starts) ==========
+
+        # 1. 定义一个专门存放日志的文件夹名
+        log_dir = "prompt_logs"
+
+        # 2. 检查这个文件夹是否存在，如果不存在，则创建它
+        #    (os 库已在文件顶部导入)
+        if not os.path.exists(log_dir):
+            os.makedirs(log_dir)
+
+        # 3. 创建一个基于当前时间的唯一文件名 (例如: initial_prompt_20251110_113000.txt)
+        #    我们将其命名为 "initial_prompt" 因为这是 IRCoT 流程的第一个提示词
+        #    (datetime 类已在文件顶部从 datetime 模块导入)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = os.path.join(log_dir, f"initial_prompt_{timestamp}.txt")
+
+        safe_question = "".join(c if c.isalnum() or c in " _-()" else "_" for c in question)[:60]
+        full_log_file = os.path.join(log_dir, f"QA_{timestamp}_{safe_question}.txt")
+
+        # 立即创建文件并写入前两段（只写一次）
+        with open(full_log_file, "w", encoding="utf-8") as f:
+            f.write("========== 1. 原始用户问题 (User Question) ==========\n")
+            f.write(question + "\n\n")
+            f.write("========== 2. 检索到的初始图上下文 (Initial Graph Context) ==========\n")
+            f.write(context_initial + "\n\n")
+            f.write("========== 3. 完整的提示词历史 (Full Prompt History to LLM) ==========\n\n")
+
+        def append_prompt(round_num: int, prompt_text: str, query_used: str):
+            with open(full_log_file, "a", encoding="utf-8") as f:
+                if round_num == 0:
+                    f.write(f"[第0轮 - 初始提示词] (查询: {query_used})\n")
+                else:
+                    f.write(f"\n[第{round_num}轮 - IRCoT迭代提示词] (本次迭代查询: {query_used})\n")
+                f.write(prompt_text)
+                f.write("\n" + "-" * 80 + "\n")  # 可读性分隔线
+            logger.info(f"[Prompt追加] 第 {round_num} 轮已追加到 {full_log_file}")
+
+        try:
+            # 4. 使用 'w' (写入) 模式和 'utf-8' 编码打开文件
+            with open(filename, "w", encoding="utf-8") as f:
+
+                # 5. 写入原始的用户问题 (来自 'question' 变量)
+                f.write("========== 1. 原始用户问题 (User Question) ==========\n")
+                f.write(question + "\n\n")
+
+                # 6. 写入从图谱中检索到的初始上下文 (来自 'context_initial' 变量)
+                f.write("========== 2. 检索到的初始图上下文 (Initial Graph Context) ==========\n")
+                f.write(context_initial + "\n\n")
+
+                # 7. 写入最终组合好的、即将发送给 LLM 的完整提示词 (来自 'init_prompt' 变量)
+                f.write("========== 3. 完整的初始提示词 (Full Initial Prompt to LLM) ==========\n")
+                f.write(init_prompt)
+
+            # 8. (可选) 在服务器的控制台打印一条确认消息
+            #    使用文件顶部已定义的 logger
+            logger.info(f"[日志] 成功将初始提示词保存到: {filename}")
+
+        except Exception as e:
+            # 9. (可选) 如果保存失败，打印错误信息，但不会中断主程序
+            logger.warning(f"[日志] 警告：保存提示词到 {filename} 失败: {e}")
+
+        # ========== 新增代码保存提示词结束 (New Code Ends) ==========
+        append_prompt(round_num=0, prompt_text=init_prompt, query_used=question)
+
         try:
             # Offload LLM call to thread executor
             initial_answer = await loop.run_in_executor(None, lambda: kt_retriever.generate_answer(init_prompt))
@@ -833,23 +899,26 @@ async def ask_question(request: QuestionRequest, client_id: str = "default"):
             initial_answer = f"Initial answer failed: {e}"
         thoughts.append(f"Initial: {initial_answer[:200]}")
         final_answer = initial_answer
-
+        # IRCoT 循环
         for step in range(1, max_steps + 1):
             loop_triples = _dedup(list(all_triples))
             loop_chunk_ids = list(set(all_chunk_ids))
             loop_chunk_contents = _merge_chunk_contents(loop_chunk_ids, all_chunk_contents)
             loop_ctx = "=== Triples ===\n" + "\n".join(loop_triples[:20]) + "\n=== Chunks ===\n" + "\n".join(loop_chunk_contents[:10])
             loop_prompt = f"""
-You are an expert knowledge assistant using iterative retrieval with chain-of-thought reasoning.
-Current Question: {question}
-Current Iteration Query: {current_query}
-Knowledge Context:\n{loop_ctx}
-Previous Thoughts: {' | '.join(thoughts) if thoughts else 'None'}
-Instructions:
-1. If enough info answer with: So the answer is: <answer>
-2. Else propose new query with: The new query is: <query>
-Your reasoning:
-"""
+            You are an expert knowledge assistant using iterative retrieval with chain-of-thought reasoning.
+            Current Question: {question}
+            Current Iteration Query: {current_query}
+            Knowledge Context:\n{loop_ctx}
+            Previous Thoughts: {' | '.join(thoughts) if thoughts else 'None'}
+            Instructions:
+            1. If enough info answer with: So the answer is: <answer>
+            2. Else propose new query with: The new query is: <query>
+            Your reasoning:
+            """
+
+            append_prompt(round_num=step, prompt_text=loop_prompt, query_used=current_query)
+
             try:
                 reasoning = await loop.run_in_executor(None, lambda: kt_retriever.generate_answer(loop_prompt))
             except Exception as e:
@@ -945,6 +1014,12 @@ Your reasoning:
                 "triples_by_subquery": [s.get("triples_count", 0) for s in reasoning_steps if s.get("type") == "sub_question"]
             }
         }
+        with open(full_log_file, "a", encoding="utf-8") as f:
+            f.write("\n========== 最终答案 (Final Answer) ==========\n")
+            f.write(final_answer + "\n\n")
+            f.write(f"本次问答题共进行了 {len(thoughts)} 轮推理（含初始轮）\n")
+
+        logger.info(f"[完整问答流程已保存] → {full_log_file}")
 
         return QuestionResponse(
             answer=final_answer,
@@ -1273,13 +1348,21 @@ async def get_graph_data(dataset_name: str):
 
 @app.on_event("startup")
 async def startup_event():
-    """Initialize on startup"""
+    """Initialize on startup"""  # 启动事件：创建目录
     os.makedirs("data/uploaded", exist_ok=True)
     os.makedirs("output/graphs", exist_ok=True)
     os.makedirs("output/logs", exist_ok=True)
     os.makedirs("schemas", exist_ok=True)
-    
+
     logger.info("🚀 Youtu-GraphRAG Unified Interface initialized")
 
 if __name__ == "__main__":
+    # 配置 uvicorn 日志格式，添加时间戳
+    from uvicorn.config import LOGGING_CONFIG
+
+    LOGGING_CONFIG["formatters"]["default"]["fmt"] = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    LOGGING_CONFIG["formatters"]["access"]["fmt"] = "%(asctime)s - %(levelname)s - %(message)s"
+    LOGGING_CONFIG["formatters"]["default"]["datefmt"] = "%Y-%m-%d %H:%M:%S"
+    LOGGING_CONFIG["formatters"]["access"]["datefmt"] = "%Y-%m-%d %H:%M:%S"
+
     uvicorn.run(app, host="0.0.0.0", port=8000)
