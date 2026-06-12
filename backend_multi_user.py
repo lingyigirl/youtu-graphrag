@@ -728,6 +728,37 @@ def convert_standard_format(graph_data: Dict) -> Dict:
     }
 
 
+def save_prompt_to_file(round_num: int, query_used: str, prompt_text: str, is_initial: bool = False, timestamp: str = None) -> None:
+    """
+    保存每一轮的完整 prompt 到 prompt_logs 文件夹
+    round_num: 0=初始prompt, 1=IRCoT第1轮, 2=第2轮...
+    query_used: 当前这轮实际使用的查询（初始是原问题，后续是new_query）
+    """
+    log_dir = "prompt_logs"
+    os.makedirs(log_dir, exist_ok=True)
+
+    # 生成清晰的文件名，一眼就能看出是第几轮、问了什么
+    safe_query = "".join(c if c.isalnum() or c in " _-()" else "_" for c in query_used)[:50]
+    if is_initial:
+        filename = os.path.join(log_dir, f"[0_initial]_{safe_query}_{timestamp}.txt")
+    else:
+        filename = os.path.join(log_dir, f"[{round_num}_ircot]_{safe_query}_{timestamp}.txt")
+
+    try:
+        with open(filename, "w", encoding="utf-8") as f:
+            f.write(f"========== 本轮查询 (Query Used) ==========\n")
+            f.write(query_used + "\n\n")
+            f.write(f"========== 完整 Prompt (发送给 LLM) ==========\n")
+            f.write(prompt_text)
+        logger.info(f"[Prompt保存] 第 {round_num} 轮 prompt 已保存 → {filename}")
+    except Exception as e:
+        logger.warning(f"[Prompt保存失败] {filename}: {e}")
+
+
+# 生成全局 timestamp（只生成一次，整个问答过程文件名都一致，便于对照）
+# timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+
 @app.post("/api/ask-question", response_model=QuestionResponse)
 async def ask_question(
         request: QuestionRequest,
@@ -1428,7 +1459,7 @@ async def startup_event():
     os.makedirs("output/logs", exist_ok=True)
     os.makedirs("schemas", exist_ok=True)
 
-    # Nacos 注册（修正版）
+    # Nacos 注册
     service_name = 'youtu-graphrag-api'
     hostname = socket.gethostname()
     service_ip = socket.gethostbyname(hostname)
@@ -1481,6 +1512,3 @@ if __name__ == "__main__":
     LOGGING_CONFIG["formatters"]["default"]["datefmt"] = "%Y-%m-%d %H:%M:%S"
     LOGGING_CONFIG["formatters"]["access"]["datefmt"] = "%Y-%m-%d %H:%M:%S"
     uvicorn.run(app, host="0.0.0.0", port=8000, log_config=LOGGING_CONFIG)
-
-    # 调用接口顺序：
-    #

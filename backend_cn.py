@@ -35,19 +35,6 @@ import uvicorn
 from utils.logger import logger  # 日志工具
 import ast  # 用于解析三元组字符串
 
-
-from nacos import NacosClient, NacosException
-import socket
-
-# client = NacosClient(**nacos_config)  # 创建客户端实例
-server_addresses = 'localhost:8848'
-namespace = 'public'
-group_name = 'DEFAULT_GROUP'
-client = NacosClient(
-    server_addresses=server_addresses,
-    namespace=namespace,
-)  #
-
 # Import document parser  # 尝试导入文档解析器（用于 PDF/DOCX 等）
 try:
     from utils.document_parser import get_parser
@@ -1424,48 +1411,7 @@ async def startup_event():
     os.makedirs("output/logs", exist_ok=True)
     os.makedirs("schemas", exist_ok=True)
 
-    # Nacos 注册（修正版）
-    service_name = 'youtu-graphrag-api'
-    hostname = socket.gethostname()
-    service_ip = socket.gethostbyname(hostname)
-    service_port = int(os.getenv('PORT', 8000))
-    group_name = os.getenv('NACOS_GROUP', 'DEFAULT_GROUP')  # 移到这里
-    service_ip = '127.0.0.1'  # 本地固定
-    service_port = 8000  # 固定端口
-    group_name = 'DEFAULT_GROUP'  # 固定组
-    try:
-        client.add_naming_instance(  # 1.0.0 方法
-            service_name,
-            service_ip,
-            service_port,
-            group_name=group_name,  # 在方法中传入
-            weight=1.0
-        )
-        logger.info(f"Service '{service_name}' registered to Nacos at {service_ip}:{service_port}")
-    except NacosException as e:
-        logger.error(f"Nacos registration failed: {e}")
-
     logger.info("🚀 Youtu-GraphRAG Unified Interface initialized")
-
-
-@app.on_event("shutdown")
-def shutdown_event():  # 同步
-    service_name = os.getenv('SERVICE_NAME', 'youtu-graphrag-api')
-    hostname = socket.gethostname()
-    service_ip = socket.gethostbyname(hostname)
-    service_port = int(os.getenv('PORT', 8000))
-    group_name = os.getenv('NACOS_GROUP', 'DEFAULT_GROUP')
-
-    try:
-        client.remove_naming_instance(  # 1.0.0 方法
-            service_name,
-            service_ip,
-            service_port,
-            group_name=group_name
-        )
-        logger.info(f"Service '{service_name}' deregistered from Nacos")
-    except NacosException as e:
-        logger.error(f"Nacos deregistration failed: {e}")
 
 
 if __name__ == "__main__":
